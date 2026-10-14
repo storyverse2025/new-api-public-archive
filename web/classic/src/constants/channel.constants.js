@@ -175,6 +175,11 @@ export const CHANNEL_OPTIONS = [
     label: '豆包视频',
   },
   {
+    value: 60,
+    color: 'orange',
+    label: 'Reactor',
+  },
+  {
     value: 55,
     color: 'green',
     label: 'Sora',

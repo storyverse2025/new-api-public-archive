@@ -100,8 +100,14 @@ else
     "channel_name:byteplus:sv-seedance-2.5": "per_second",
     "channel_name:apimart:sv-gpt-image-2": "fixed_image",
     "channel_name:apimart:sv-gpt-image-2-official": "image_quality_resolution",
+    "channel_name:apimart:sv-gpt-image-2.5-flare": "upstream_cost",
+    "channel_name:apimart:sv-gpt-image-2.5-sunburst": "upstream_cost",
+    "channel_name:apimart:gpt-image-2.5-flare": "upstream_cost",
+    "channel_name:apimart:gpt-image-2.5-sunburst": "upstream_cost",
     "channel_name:apimart:sv-nano-banana-pro": "fixed_image",
     "channel_name:apimart:sv-seedream-5.0-lite": "fixed_image",
+    "channel_name:reactor:sv-fast-h3-omni": "reactor_gpu_seconds",
+    "channel_name:reactor:reactor/fast-h3-omni": "reactor_gpu_seconds",
     "channel_name:fal:sv-kling-3.0": "per_second",
     "channel_name:fal:sv-seedance-2.0": "per_second",
     "channel_name:fal:sv-sora-2": "per_second",
@@ -116,6 +122,10 @@ else
     --argjson seedream "${SEEDREAM_LITE_PRICE_PER_IMAGE:-0.03}" \
     --argjson seedance25_720p "${BYTEPLUS_SEEDANCE25_720P_PRICE_PER_SECOND:-0.2268}" \
     --argjson gpt_image "${APIMART_GPT_IMAGE_PRICE_PER_IMAGE:-0.08}" \
+    --argjson gpt_image25_reserve "${APIMART_GPT_IMAGE25_RESERVE_PER_IMAGE:-1.00}" \
+    --argjson gpt_image25_multiplier "${APIMART_GPT_IMAGE25_COST_MULTIPLIER:-1.00}" \
+    --argjson reactor_session_cap "${REACTOR_SESSION_MAX_SECONDS:-120}" \
+    --argjson reactor_gpu_rate "${REACTOR_GPU_PRICE_PER_SECOND:-0.0125}" \
     --argjson banana "${APIMART_BANANA_PRO_PRICE_PER_IMAGE:-0.039}" \
     --argjson klingv3 "${FAL_KLING_V3_PRICE_PER_SECOND:-0.14}" \
     --argjson seedance "${FAL_SEEDANCE_PRICE_PER_SECOND:-0.10}" \
@@ -161,11 +171,35 @@ else
         "price_high_2k": 0.13576,
         "price_high_4k": 0.32032
       },
+      "channel_name:apimart:sv-gpt-image-2.5-flare": {
+        "reserve_price_per_image": $gpt_image25_reserve,
+        "cost_multiplier": $gpt_image25_multiplier
+      },
+      "channel_name:apimart:sv-gpt-image-2.5-sunburst": {
+        "reserve_price_per_image": $gpt_image25_reserve,
+        "cost_multiplier": $gpt_image25_multiplier
+      },
+      "channel_name:apimart:gpt-image-2.5-flare": {
+        "reserve_price_per_image": $gpt_image25_reserve,
+        "cost_multiplier": $gpt_image25_multiplier
+      },
+      "channel_name:apimart:gpt-image-2.5-sunburst": {
+        "reserve_price_per_image": $gpt_image25_reserve,
+        "cost_multiplier": $gpt_image25_multiplier
+      },
       "channel_name:apimart:sv-nano-banana-pro": {
         "price_per_image": $banana
       },
       "channel_name:apimart:sv-seedream-5.0-lite": {
         "price_per_image": $seedream
+      },
+      "channel_name:reactor:sv-fast-h3-omni": {
+        "reserve_session_seconds": $reactor_session_cap,
+        "price_per_second": $reactor_gpu_rate
+      },
+      "channel_name:reactor:reactor/fast-h3-omni": {
+        "reserve_session_seconds": $reactor_session_cap,
+        "price_per_second": $reactor_gpu_rate
       },
       "channel_name:fal:sv-kling-3.0": {
         "default_seconds": 5,

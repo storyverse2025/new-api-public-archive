@@ -1,0 +1,22 @@
+# Optional Reactor bridge. Combine with docker-compose.prod.yml or .local.yml:
+# docker compose --env-file deploy/.env.prod -f deploy/docker-compose.prod.yml \
+#   -f deploy/docker-compose.reactor.yml up -d --build
+services:
+  reactor-worker:
+    build:
+      context: ../relay/channel/reactor/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Only the gateway on the compose network can reach this service.
+    expose:
+      - "8091"
+    environment:
+      REACTOR_API_KEY: ${REACTOR_API_KEY:?Set REACTOR_API_KEY in deploy/.env.prod}
+      REACTOR_WORKER_SECRET: ${REACTOR_WORKER_SECRET:?Set an independent REACTOR_WORKER_SECRET}
+      REACTOR_SESSION_MAX_SECONDS: ${REACTOR_SESSION_MAX_SECONDS:-120}
+      REACTOR_WORKER_DATA_DIR: /data/reactor
+    volumes:
+      - reactor_worker_data:/data/reactor
+
+volumes:
+  reactor_worker_data:

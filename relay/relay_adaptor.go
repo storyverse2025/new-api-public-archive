@@ -29,6 +29,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	"github.com/QuantumNous/new-api/relay/channel/palm"
 	"github.com/QuantumNous/new-api/relay/channel/perplexity"
+	"github.com/QuantumNous/new-api/relay/channel/reactor"
 	"github.com/QuantumNous/new-api/relay/channel/replicate"
 	"github.com/QuantumNous/new-api/relay/channel/siliconflow"
 	"github.com/QuantumNous/new-api/relay/channel/submodel"
@@ -127,6 +128,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &apimart.Adaptor{}
 	case constant.APITypeFal:
 		return &fal.Adaptor{}
+	case constant.APITypeReactor:
+		return &reactor.Adaptor{}
 	}
 	return nil
 }
@@ -170,6 +173,8 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 			return &taskfal.TaskAdaptor{}
 		case constant.ChannelTypeAPImart:
 			return &apimart.TaskAdaptor{}
+		case constant.ChannelTypeReactor:
+			return &reactor.TaskAdaptor{}
 		}
 	}
 	return nil

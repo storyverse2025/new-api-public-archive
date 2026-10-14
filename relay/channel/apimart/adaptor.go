@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/pkg/billingcalc"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
@@ -130,7 +131,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return nil, types.NewError(errors.New("apimart: empty task_id in submit response"), types.ErrorCodeBadResponse)
 	}
 
-	imageURL, pollErr := pollTask(
+	result, responseBody, pollErr := pollTaskResult(
 		c.Request.Context(),
 		service.GetHttpClient(),
 		a.baseURL,
@@ -143,13 +144,20 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return nil, types.NewError(pollErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 	}
 
+	info.BillingCalcResponseBody = responseBody
+	if snap := info.BillingCalcSnapshot; snap != nil && snap.RuleName == "upstream_cost" {
+		if _, err := billingcalc.SettleSnapshot(snap, billingcalc.Context{ResponseBody: responseBody}); err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+		}
+	}
+
 	imageResp := dto.ImageResponse{
 		Created: time.Now().Unix(),
-		Data:    []dto.ImageData{{Url: imageURL}},
+		Data:    result.ImageData(),
 	}
 	c.JSON(http.StatusOK, imageResp)
 
-	return &dto.Usage{PromptTokens: 1, TotalTokens: 1}, nil
+	return &dto.Usage{PromptTokens: result.Data.Usage.InputTokens, CompletionTokens: result.Data.Usage.OutputTokens, TotalTokens: result.Data.Usage.TotalTokens}, nil
 }
 
 func (a *Adaptor) GetModelList() []string {
@@ -162,26 +170,34 @@ func (a *Adaptor) GetChannelName() string {
 
 // pollTask polls GET {baseURL}/v1/tasks/{taskID} until the task completes, fails, or the context/timeout expires.
 func pollTask(ctx context.Context, client *http.Client, baseURL, apiKey, taskID string, interval, timeout time.Duration) (string, error) {
+	result, _, err := pollTaskResult(ctx, client, baseURL, apiKey, taskID, interval, timeout)
+	if err != nil {
+		return "", err
+	}
+	return firstTaskImageURL(*result), nil
+}
+
+func pollTaskResult(ctx context.Context, client *http.Client, baseURL, apiKey, taskID string, interval, timeout time.Duration) (*TaskResponse, []byte, error) {
 	deadline := time.Now().Add(timeout)
 	pollURL := strings.TrimRight(baseURL, "/") + "/v1/tasks/" + taskID
 	for {
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
 		if reqErr != nil {
-			return "", reqErr
+			return nil, nil, reqErr
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 
 		httpResp, doErr := client.Do(req)
 		if doErr != nil {
 			if !shouldRetryPollError(ctx, doErr) {
-				return "", doErr
+				return nil, nil, doErr
 			}
 			if time.Now().After(deadline) {
-				return "", fmt.Errorf("apimart: poll timeout after %s (last error: %v)", timeout, doErr)
+				return nil, nil, fmt.Errorf("apimart: poll timeout after %s (last error: %v)", timeout, doErr)
 			}
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return nil, nil, ctx.Err()
 			case <-time.After(interval):
 				continue
 			}
@@ -191,25 +207,29 @@ func pollTask(ctx context.Context, client *http.Client, baseURL, apiKey, taskID 
 
 		var tr TaskResponse
 		if unmarshalErr := common.Unmarshal(respBody, &tr); unmarshalErr != nil {
-			return "", fmt.Errorf("apimart: bad task response: %s", string(respBody))
+			return nil, nil, fmt.Errorf("apimart: bad task response: %s", string(respBody))
+		}
+
+		if tr.Code != 200 {
+			return nil, nil, fmt.Errorf("apimart: task response code=%d msg=%s", tr.Code, tr.Message)
 		}
 
 		switch tr.Data.Status {
 		case "completed":
-			if len(tr.Data.Result.Images) > 0 && len(tr.Data.Result.Images[0].URL) > 0 {
-				return tr.Data.Result.Images[0].URL[0], nil
+			if len(tr.ImageData()) > 0 {
+				return &tr, respBody, nil
 			}
-			return "", errors.New("apimart: completed but no image url")
+			return nil, nil, errors.New("apimart: completed but no image url")
 		case "failed":
-			return "", fmt.Errorf("apimart: task failed: %s", taskErrorMessage(tr))
+			return nil, nil, fmt.Errorf("apimart: task failed: %s", taskErrorMessage(tr))
 		}
 
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("apimart: poll timeout after %s (last status %q)", timeout, tr.Data.Status)
+			return nil, nil, fmt.Errorf("apimart: poll timeout after %s (last status %q)", timeout, tr.Data.Status)
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return nil, nil, ctx.Err()
 		case <-time.After(interval):
 		}
 	}

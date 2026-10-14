@@ -152,6 +152,9 @@ model remains a client-owned decision.
 | `openai/gpt-5.5` | TokenRouter | `sv-gpt-5.5` |
 | `gpt-image-2` | APIMart -> FAL/OpenAI-compatible -> TokenRouter/OpenAI-compatible | `sv-gpt-image-2` |
 | `gpt-image-2-official` | APIMart (OpenAI official channel; honors `quality`) | `sv-gpt-image-2-official` |
+| `gpt-image-2.5-flare` | APIMart | `sv-gpt-image-2.5-flare` |
+| `gpt-image-2.5-sunburst` | APIMart | `sv-gpt-image-2.5-sunburst` |
+| `reactor/fast-h3-omni` | Reactor official SDK worker | `sv-fast-h3-omni` |
 | `nanobanana-pro` | APIMart | `sv-nano-banana-pro` |
 | `nanobanana` | FAL | `sv-nano-banana-2` when added |
 | `seedream-5` | BytePlus or FAL -> APIMart | `sv-seedream-5.0-lite` |
@@ -175,6 +178,9 @@ through a different channel.
 | `gpt-5.5` / Storyverse `openai/gpt-5.5` | `sv-gpt-5.5` | `tokenrouter` | `openai/gpt-5.5` | Seeded |
 | Storyverse / Bragi `gpt-image-2` | `sv-gpt-image-2` | `apimart` | `gpt-image-2` | Seeded |
 | Storyverse / Bragi `gpt-image-2-official` | `sv-gpt-image-2-official` | `apimart` | `gpt-image-2-official` | Seeded; forwards `quality` |
+| GPT Image 2.5 Flare | `sv-gpt-image-2.5-flare` | `apimart` | `gpt-image-2.5-flare` | Seeded; actual upstream USD cost settlement |
+| GPT Image 2.5 Sunburst | `sv-gpt-image-2.5-sunburst` | `apimart` | `gpt-image-2.5-sunburst` | Seeded; actual upstream USD cost settlement |
+| Reactor Fast H3 Omni | `sv-fast-h3-omni` | `reactor` | `reactor/fast-h3-omni` | Optional official SDK worker; GPU-session-second settlement |
 | Storyverse / Bragi `nanobanana-pro` | `sv-nano-banana-pro` | `apimart` | `gemini-3-pro-image-preview` | Seeded |
 | Storyverse / Bragi Seedream image generation | `sv-seedream-5.0-lite` | `byteplus` | `${SEEDREAM_LITE_ENDPOINT_ID}` | Seeded for image generations |
 | Storyverse / Bragi Seedream image generation fallback | `sv-seedream-5.0-lite` | `apimart` | `doubao-seedream-5-0-lite` | Seeded as lower-priority same-model candidate |

@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/channel/apimart"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -76,10 +77,14 @@ func RelayImageTask(c *gin.Context) {
 		return
 	}
 	imageN := imageTaskN(imageReq)
-	if priceData.UsePrice && imageN > 1 {
+	if relayInfo.BillingCalcSnapshot == nil && priceData.UsePrice && imageN > 1 {
 		priceData.AddOtherRatio("n", float64(imageN))
 	}
-	quota := imageTaskQuota(priceData.QuotaToPreConsume, imageN)
+	quota := priceData.QuotaToPreConsume
+	// Provider rules already include n in their reservation.
+	if relayInfo.BillingCalcSnapshot == nil {
+		quota = imageTaskQuota(quota, imageN)
+	}
 	priceData.Quota = quota
 	priceData.QuotaToPreConsume = quota
 	relayInfo.PriceData = priceData
@@ -141,12 +146,13 @@ func RelayImageTask(c *gin.Context) {
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.ConsumeLogId = consumeLogId
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
-		ModelPrice:      relayInfo.PriceData.ModelPrice,
-		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-		ModelRatio:      relayInfo.PriceData.ModelRatio,
-		OtherRatios:     relayInfo.PriceData.OtherRatios,
-		OriginModelName: relayInfo.OriginModelName,
-		PerCallBilling:  true,
+		ModelPrice:              relayInfo.PriceData.ModelPrice,
+		GroupRatio:              relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		ModelRatio:              relayInfo.PriceData.ModelRatio,
+		OtherRatios:             relayInfo.PriceData.OtherRatios,
+		OriginModelName:         relayInfo.OriginModelName,
+		PerCallBilling:          relayInfo.BillingCalcSnapshot == nil,
+		ProviderBillingSnapshot: relayInfo.BillingCalcSnapshot,
 	}
 	task.Quota = quota
 	task.Data = taskData
@@ -203,7 +209,11 @@ func imageTaskResponse(task *model.Task) dto.ImageTaskResponse {
 		if resp.CompletedAt == 0 {
 			resp.CompletedAt = task.UpdatedAt
 		}
-		if url := task.GetResultURL(); url != "" {
+		var upstream apimart.TaskResponse
+		if common.Unmarshal(task.Data, &upstream) == nil {
+			resp.Data = upstream.ImageData()
+		}
+		if url := task.GetResultURL(); len(resp.Data) == 0 && url != "" {
 			resp.Data = []dto.ImageData{{Url: url}}
 		}
 	}

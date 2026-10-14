@@ -91,6 +91,7 @@ export function getChannelTypeIcon(type: number): string {
     44: 'OpenAI', // MokaAI
     20: 'OpenRouter', // OpenRouter
     59: 'OpenAI', // FAL
+    60: 'OpenAI', // Reactor
 
     // Image/Video generation
     2: 'Midjourney', // Midjourney

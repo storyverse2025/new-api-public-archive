@@ -171,6 +171,46 @@ curl -X PUT https://GATEWAY_DOMAIN/api/option/ \
 
 After deploying a gateway image that adds a new provider or model mapping, run `bash deploy/seed_channels.sh` again so the production database matches the current seed definition. The script is idempotent: existing tokens are skipped by name, system options are re-applied with the same values, and provider-scoped channels are updated in place.
 
+### APIMart GPT Image 2.5 key and models
+
+Create an upstream key at [APIMart API Keys](https://apimart.ai/keys). Both
+GPT Image 2.5 variants use the same key. Set `APIMART_API_KEY` in the gitignored
+`deploy/.env.prod`; this variable is used by the seed script to store the key in
+the channel database. Setting it only on the gateway container does not update
+an existing channel. Alternatively, edit the **apimart** channel in the admin
+console: type **APIMart (58)**, base URL `https://api.apimart.ai`, and paste the
+upstream key into its **Key** field (without the `Bearer ` prefix).
+
+The seeded model mappings are:
+
+| Gateway model | APIMart model |
+| --- | --- |
+| `sv-gpt-image-2.5-flare` | `gpt-image-2.5-flare` |
+| `sv-gpt-image-2.5-sunburst` | `gpt-image-2.5-sunburst` |
+
+For a manual channel update, add the two gateway names to **Models** and the
+mapping below to **Model Redirect**, preserving the existing entries:
+
+```json
+{
+  "sv-gpt-image-2.5-flare": "gpt-image-2.5-flare",
+  "sv-gpt-image-2.5-sunburst": "gpt-image-2.5-sunburst"
+}
+```
+
+Deploy the updated gateway binary before running both seed scripts. Run them
+with `GATEWAY_URL` pointing to the intended gateway and root credentials set in
+`deploy/.env.prod`. The full channel seed also requires the other provider keys
+listed in its validation step; manual channel editing avoids that requirement.
+Clients authenticate to svrouter using a **gateway token**, not the APIMart key.
+
+See the [APIMart GPT Image 2.5 API reference](https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation)
+for parameter limits. The adaptor forwards `size`, `resolution`, `quality`,
+`image_urls`, `mask_url`, `background`, `moderation`, `output_format`, and
+`output_compression`. An explicit compression of `0` is preserved. Use JSON
+`image_urls` and `mask_url` for editing; local uploads/multipart edit conversion
+are not implemented by this APIMart adaptor.
+
 ### Run the billing seed script
 
 ```bash
@@ -179,6 +219,84 @@ bash deploy/seed_billing_rules.sh
 ```
 
 This script writes `billing_setting.billing_rule` and `billing_setting.billing_rule_params` for the seeded `sv-*` media models. Re-running it is safe: it replaces the two billing option values with the current script output. Price constants can be overridden with environment variables such as `FAL_VEO_*`, `FAL_ELEVENLABS_PRICE_PER_1K_CHARACTERS`, or by passing `BILLING_RULES_FILE=deploy/my-billing-rules.json`.
+
+GPT Image 2.5 uses the `upstream_cost` rule for both canonical and raw model
+names. It reserves `$1.00 × n` by default, then settles against APIMart's actual
+`data.cost` in USD, with excess quota refunded. This value already includes all
+generated images and token categories; `credits_cost` is not a USD amount.
+Override the reservation with `APIMART_GPT_IMAGE25_RESERVE_PER_IMAGE` and any
+markup with `APIMART_GPT_IMAGE25_COST_MULTIPLIER` (default `1.00`). The reservation
+is configurable and is not a guaranteed cap on upstream usage. Both synchronous
+`/v1/images/generations` and asynchronous `/v1/images/tasks` use actual-cost
+settlement. If a completed asynchronous response lacks a valid USD cost, the
+gateway logs the settlement error and retains the reservation for reconciliation.
+
+### Reactor Fast H3 Omni worker
+
+Fast H3 Omni uses Reactor's session/WebRTC protocol. The gateway adapts it to
+the existing asynchronous video API through an internal worker using the pinned
+official Python SDK and saves the received video/audio frames as MP4. See [Reactor's model API](https://www.reactor.inc/models/fast-h3-omni/api).
+
+Set these values in the gitignored `deploy/.env.prod`:
+
+```dotenv
+REACTOR_API_KEY=<your-reactor-key>
+REACTOR_WORKER_SECRET=<independent-random-secret>
+REACTOR_WORKER_URL=http://reactor-worker:8091
+REACTOR_SESSION_MAX_SECONDS=120
+REACTOR_GPU_PRICE_PER_SECOND=0.0125
+```
+
+Generate the worker secret with `openssl rand -hex 32`. The upstream API key
+stays in the worker; the **reactor** channel (type **60**) stores the worker
+secret. Client applications store only their gateway URL and gateway token.
+The worker's HTTP port is internal to the compose network, and both task and
+MP4 endpoints require its secret. Its database and outputs use the persistent
+`reactor_worker_data` volume.
+
+```bash
+docker compose --env-file deploy/.env.prod \
+  -f deploy/docker-compose.prod.yml -f deploy/docker-compose.reactor.yml \
+  up -d --build
+bash deploy/seed_channels.sh
+bash deploy/seed_billing_rules.sh
+```
+
+The optional channel is seeded only when `REACTOR_WORKER_SECRET` is set. It maps
+`sv-fast-h3-omni` to `reactor/fast-h3-omni`. The `reactor_gpu_seconds` billing rule
+reserves the configured session cap (default 120 seconds), then settles the
+worker's measured time from GPU readiness to session disconnect at the configured
+GPU-second rate. Output clip duration is a separate value and does not determine
+the final fee. Keep the worker cap and billing seed setting aligned. The default
+rate is `$0.0125` per GPU second; adjust it if the upstream account pricing changes.
+
+Submit through `/v1/videos`, poll `/v1/videos/<id>`, then download the result at
+`/v1/videos/<id>/content`, using the same gateway token throughout:
+
+```json
+{
+  "model": "sv-fast-h3-omni",
+  "prompt": "A blue cube rotating slowly on a white table",
+  "metadata": {
+    "seconds": 5.875,
+    "canvas": "1:1",
+    "seed": 0
+  }
+}
+```
+
+Allowed clip durations are `5.875`, `8`, `10.125`, `12.25`, and `14.375` seconds;
+use `metadata.seconds` to preserve fractions. Supported canvases are `16:9`,
+`1:1`, `9:16`, and `4:3`, with dimensions fixed by the model. Use
+`metadata.reference_images` (up to nine public image URLs) and
+`metadata.reference_audios` (up to three public audio URLs). First/last frame
+selections require at least one appearance reference image. Each task has its own bounded session;
+cross-session continuation and arbitrary resolutions are not supported.
+
+Failed or interrupted tasks follow the gateway's existing refund policy. Reactor
+can still charge GPU usage incurred by a failed job. The worker marks unfinished
+jobs as failed after restart; it cannot recover the exact meter for a crashed
+session. Successful outputs remain available in the worker volume.
 
 To **add models to an existing channel** outside the full seed path (e.g. new fal video models on the already-seeded `fal` channel), patch it in place:
 ```bash
@@ -206,6 +324,19 @@ curl -s https://GATEWAY_DOMAIN/v1/images/generations \
   -H "Authorization: Bearer sk-..." \
   -H "Content-Type: application/json" \
   -d '{"model":"sv-gpt-image-2","prompt":"a red apple","n":1,"size":"1024x1024"}'
+
+# GPT Image 2.5 (change flare to sunburst for the second variant)
+curl -s https://GATEWAY_DOMAIN/v1/images/generations \
+  -H "Authorization: Bearer <gateway-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"sv-gpt-image-2.5-flare","prompt":"a red apple","n":1,"size":"1:1","resolution":"1k","quality":"medium"}'
+
+# Submit an asynchronous image task; poll /v1/images/tasks/<task_id> with
+# the same gateway token until status becomes completed or failed.
+curl -s https://GATEWAY_DOMAIN/v1/images/tasks \
+  -H "Authorization: Bearer <gateway-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"sv-gpt-image-2.5-sunburst","prompt":"a red apple","n":1,"size":"1:1","resolution":"1k","quality":"medium"}'
 ```
 
 ---

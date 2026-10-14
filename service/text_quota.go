@@ -334,7 +334,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	var billingCalcResult *billingcalc.Result
 	if relayInfo.BillingCalcSnapshot != nil {
-		result, err := billingcalc.SettleSnapshot(relayInfo.BillingCalcSnapshot, billingcalc.Context{})
+		result, err := billingcalc.SettleSnapshot(relayInfo.BillingCalcSnapshot, billingcalc.Context{ResponseBody: relayInfo.BillingCalcResponseBody})
 		if err != nil {
 			logger.LogError(ctx, "error settling provider billing rule: "+err.Error())
 		} else {

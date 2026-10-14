@@ -136,7 +136,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		return relaycommon.FailTaskInfo(fmt.Sprintf("apimart: task response code=%d msg=%s", tr.Code, tr.Message)), nil
 	}
 
-	taskInfo := &relaycommon.TaskInfo{}
+	taskInfo := &relaycommon.TaskInfo{ResponseBody: respBody}
 	switch tr.Data.Status {
 	case "completed":
 		taskInfo.Status = model.TaskStatusSuccess
@@ -179,16 +179,25 @@ func buildSubmitRequest(request dto.ImageRequest) (*SubmitRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	var compression *int
+	if len(request.OutputCompression) > 0 {
+		if err := common.Unmarshal(request.OutputCompression, &compression); err != nil {
+			return nil, fmt.Errorf("apimart: invalid output_compression: %w", err)
+		}
+	}
 	return &SubmitRequest{
-		Model:        request.Model,
-		Prompt:       request.Prompt,
-		N:            &n,
-		Size:         request.Size,
-		Resolution:   stringFromExtra(request, "resolution"),
-		Quality:      request.Quality,
-		OutputFormat: jsonStringValue(request.OutputFormat),
-		ImageURLs:    imageURLs,
-		MaskURL:      stringFromExtra(request, "mask_url"),
+		Model:             request.Model,
+		Prompt:            request.Prompt,
+		N:                 &n,
+		Size:              request.Size,
+		Resolution:        stringFromExtra(request, "resolution"),
+		Quality:           request.Quality,
+		OutputFormat:      jsonStringValue(request.OutputFormat),
+		OutputCompression: compression,
+		Background:        jsonStringValue(request.Background),
+		Moderation:        jsonStringValue(request.Moderation),
+		ImageURLs:         imageURLs,
+		MaskURL:           stringFromExtra(request, "mask_url"),
 	}, nil
 }
 
