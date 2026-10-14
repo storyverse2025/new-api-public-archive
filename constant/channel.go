@@ -57,6 +57,7 @@ const (
 	ChannelTypeCodex          = 57
 	ChannelTypeAPImart        = 58
 	ChannelTypeFal            = 59
+	ChannelTypeReactor        = 60
 	ChannelTypeDummy          // this one is only for count, do not add any channel after this
 
 )
@@ -122,6 +123,7 @@ var ChannelBaseURLs = []string{
 	"https://chatgpt.com",                       //57
 	"https://api.apimart.ai",                    //58
 	"https://fal.run",                           //59
+	"",                                          //60 — internal Reactor SDK worker
 }
 
 var ChannelTypeNames = map[int]string{
@@ -181,6 +183,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeCodex:          "Codex",
 	ChannelTypeAPImart:        "APImart",
 	ChannelTypeFal:            "FAL",
+	ChannelTypeReactor:        "Reactor",
 }
 
 func GetChannelTypeName(channelType int) string {

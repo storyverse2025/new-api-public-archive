@@ -134,6 +134,12 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       baseUrl: 'Default: https://api.replicate.com',
     },
   },
+  60: {
+    id: 60,
+    name: CHANNEL_TYPES[60],
+    icon: 'openai',
+    supportedModels: ['sv-fast-h3-omni', 'reactor/fast-h3-omni'],
+  },
   59: {
     id: 59,
     name: CHANNEL_TYPES[59],

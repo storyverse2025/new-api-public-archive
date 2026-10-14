@@ -212,13 +212,28 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if actualQuota <= 0 {
 		return
 	}
+	recalculateTaskQuota(ctx, task, actualQuota, reason)
+}
+
+func recalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string) bool {
+	if actualQuota < 0 {
+		return false
+	}
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",
 			task.TaskID, logger.LogQuota(actualQuota), reason))
-		return
+		if bc := task.PrivateData.BillingContext; bc != nil && bc.ProviderBillingSnapshot != nil && task.PrivateData.ConsumeLogId > 0 {
+			other := taskBillingOther(task)
+			other["task_id"] = task.TaskID
+			other["is_task"] = true
+			other["pre_consumed_quota"] = preConsumedQuota
+			other["actual_quota"] = actualQuota
+			model.UpdateConsumeLogQuota(task.PrivateData.ConsumeLogId, actualQuota, reason, other)
+		}
+		return true
 	}
 
 	logger.LogInfo(ctx, fmt.Sprintf("任务 %s 差额结算：delta=%s（实际：%s，预扣：%s，%s）",
@@ -232,7 +247,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	// 调整资金来源
 	if err := taskAdjustFunding(task, quotaDelta); err != nil {
 		logger.LogError(ctx, fmt.Sprintf("差额结算资金调整失败 task %s: %s", task.TaskID, err.Error()))
-		return
+		return false
 	}
 
 	// 调整令牌额度
@@ -245,11 +260,18 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if quotaDelta > 0 {
 		logType = model.LogTypeConsume
 		logQuota = quotaDelta
-		model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quotaDelta)
-		model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
+		if bc := task.PrivateData.BillingContext; bc == nil || bc.ProviderBillingSnapshot == nil {
+			model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quotaDelta)
+			model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
+		}
 	} else {
 		logType = model.LogTypeRefund
 		logQuota = -quotaDelta
+	}
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.ProviderBillingSnapshot != nil {
+		// The submission already counted this request and its reservation.
+		model.UpdateUserUsedQuota(task.UserId, quotaDelta)
+		model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
 	}
 	other := taskBillingOther(task)
 	other["task_id"] = task.TaskID
@@ -262,7 +284,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if logId := task.PrivateData.ConsumeLogId; logId > 0 {
 		other["is_task"] = true
 		if model.UpdateConsumeLogQuota(logId, actualQuota, reason, other) {
-			return
+			return true
 		}
 	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
@@ -276,6 +298,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		Group:     task.Group,
 		Other:     other,
 	})
+	return true
 }
 
 func RecalculateTaskQuotaByProviderBilling(ctx context.Context, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
@@ -296,9 +319,20 @@ func RecalculateTaskQuotaByProviderBilling(ctx context.Context, task *model.Task
 	// (billing_cost_usd / billing_params / billing_breakdown, sourced from the
 	// snapshot in taskBillingOther) reflects the actual bill rather than the
 	// pre-consume estimate.
+	previousSnapshot := *bc.ProviderBillingSnapshot
 	bc.ProviderBillingSnapshot.ApplySettlement(result)
 	reason := fmt.Sprintf("provider计费规则：rule=%s, cost=$%.6f", result.RuleName, result.CostUSD)
-	RecalculateTaskQuota(ctx, task, result.Quota, reason)
+	if !recalculateTaskQuota(ctx, task, result.Quota, reason) {
+		*bc.ProviderBillingSnapshot = previousSnapshot
+		return true
+	}
+	// The terminal status is saved before billing; persist the final quota and
+	// frozen billing detail so reloaded tasks agree with wallet and usage logs.
+	if task.ID > 0 {
+		if err := task.Update(); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("persist provider billing failed task %s: %s", task.TaskID, err.Error()))
+		}
+	}
 	return true
 }
 

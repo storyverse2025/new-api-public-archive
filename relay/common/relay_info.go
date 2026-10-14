@@ -170,6 +170,8 @@ type RelayInfo struct {
 	TieredBillingSnapshot *billingexpr.BillingSnapshot
 	BillingRequestInput   *billingexpr.RequestInput
 	BillingCalcSnapshot   *billingcalc.Snapshot
+	// Final provider response used to settle rules based on upstream usage/cost.
+	BillingCalcResponseBody []byte
 
 	Request dto.Request
 

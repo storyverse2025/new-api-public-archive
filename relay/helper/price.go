@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingcalc"
@@ -69,7 +70,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
 	groupRatioInfo := HandleGroupRatio(c, info)
-	channelID, channelName, _ := relayChannelIdentity(info)
+	channelID, channelName, _ := relayChannelIdentity(c, info)
 	upstreamModelName := relayUpstreamModelName(info)
 
 	if ruleName, ruleParams, ruleKey, ok := billing_setting.ResolveBillingRule(channelID, channelName, info.OriginModelName, upstreamModelName); ok {
@@ -316,7 +317,7 @@ func modelPriceHelperBillingRule(c *gin.Context, info *relaycommon.RelayInfo, gr
 	if err != nil {
 		return types.PriceData{}, err
 	}
-	channelID, channelName, channelType := relayChannelIdentity(info)
+	channelID, channelName, channelType := relayChannelIdentity(c, info)
 	upstreamModelName := relayUpstreamModelName(info)
 
 	result, err := billingcalc.Estimate(ruleName, billingcalc.Context{
@@ -360,8 +361,15 @@ func modelPriceHelperBillingRule(c *gin.Context, info *relaycommon.RelayInfo, gr
 	return priceData, nil
 }
 
-func relayChannelIdentity(info *relaycommon.RelayInfo) (channelID int, channelName string, channelType int) {
+func relayChannelIdentity(c *gin.Context, info *relaycommon.RelayInfo) (channelID int, channelName string, channelType int) {
 	if info == nil || info.ChannelMeta == nil {
+		// Distribution selects the first channel before Relay builds ChannelMeta.
+		// Pricing must still resolve provider-scoped rules before pre-consumption.
+		if c != nil {
+			return common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+				common.GetContextKeyString(c, constant.ContextKeyChannelName),
+				common.GetContextKeyInt(c, constant.ContextKeyChannelType)
+		}
 		return 0, "", 0
 	}
 	return info.ChannelId, info.ChannelName, info.ChannelType

@@ -11,6 +11,8 @@ func init() {
 	Register(FixedPriceRule{})
 	Register(FixedImageRule{})
 	Register(ImageQualityResolutionRule{})
+	Register(UpstreamCostRule{})
+	Register(ReactorGPUSecondsRule{})
 	Register(PerSecondRule{})
 	Register(PerCharacterRule{})
 	Register(BytePlusSeedance2Rule{})

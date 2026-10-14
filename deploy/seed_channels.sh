@@ -76,7 +76,7 @@ json_escape() {
 AUTH_ARGS=()
 if [[ -n "${GATEWAY_ROOT_ACCESS_TOKEN:-}" ]]; then
   echo "[seed] Authenticating via GATEWAY_ROOT_ACCESS_TOKEN"
-  AUTH_ARGS=(-H "Authorization: Bearer ${GATEWAY_ROOT_ACCESS_TOKEN}")
+	AUTH_ARGS=(-H "Authorization: Bearer ${GATEWAY_ROOT_ACCESS_TOKEN}" -H "New-Api-User: 1")
 else
   echo "[seed] Authenticating via password login as ${GATEWAY_ROOT_USERNAME}"
   LOGIN_BODY="{\"username\":\"$(json_escape "${GATEWAY_ROOT_USERNAME}")\",\"password\":\"$(json_escape "${GATEWAY_ROOT_PASSWORD}")\"}"
@@ -231,7 +231,7 @@ upsert_channel() {
   local channel_json="$3"
   local id
   id="$(get_channel_id_by_name "${name}")"
-  if [[ -z "${id}" ]]; then
+  if [[ -z "${id}" && -n "${legacy_names}" ]]; then
     local legacy_name
     IFS=',' read -ra legacy_name_array <<< "${legacy_names}"
     for legacy_name in "${legacy_name_array[@]}"; do
@@ -333,14 +333,33 @@ upsert_channel "apimart" "apimart-images" "{
   \"type\": 58,
   \"key\": \"${APIMART_API_KEY}\",
   \"base_url\": \"https://api.apimart.ai\",
-  \"models\": \"gpt-image-2,gpt-image-2-official,gemini-3-pro-image-preview,doubao-seedream-5-0-lite,sv-gpt-image-2,sv-gpt-image-2-official,sv-nano-banana-pro,sv-seedream-5.0-lite\",
-  \"model_mapping\": \"{\\\"sv-gpt-image-2\\\":\\\"gpt-image-2\\\",\\\"sv-gpt-image-2-official\\\":\\\"gpt-image-2-official\\\",\\\"sv-nano-banana-pro\\\":\\\"gemini-3-pro-image-preview\\\",\\\"sv-seedream-5.0-lite\\\":\\\"doubao-seedream-5-0-lite\\\"}\",
+  \"models\": \"gpt-image-2,gpt-image-2-official,gpt-image-2.5-flare,gpt-image-2.5-sunburst,gemini-3-pro-image-preview,doubao-seedream-5-0-lite,sv-gpt-image-2,sv-gpt-image-2-official,sv-gpt-image-2.5-flare,sv-gpt-image-2.5-sunburst,sv-nano-banana-pro,sv-seedream-5.0-lite\",
+  \"model_mapping\": \"{\\\"sv-gpt-image-2\\\":\\\"gpt-image-2\\\",\\\"sv-gpt-image-2-official\\\":\\\"gpt-image-2-official\\\",\\\"sv-gpt-image-2.5-flare\\\":\\\"gpt-image-2.5-flare\\\",\\\"sv-gpt-image-2.5-sunburst\\\":\\\"gpt-image-2.5-sunburst\\\",\\\"sv-nano-banana-pro\\\":\\\"gemini-3-pro-image-preview\\\",\\\"sv-seedream-5.0-lite\\\":\\\"doubao-seedream-5-0-lite\\\"}\",
   \"group\": \"sv-monorepo,bragi-canvas\",
   \"priority\": 100,
   \"weight\": 100,
   \"status\": 1
 }"
 disable_legacy_channels "apimart" "apimart-images"
+
+# Optional Reactor bridge: upstream credentials remain in the official SDK worker.
+if [[ -n "${REACTOR_WORKER_SECRET:-}" ]]; then
+  upsert_channel "reactor" "" "{
+    \"name\": \"reactor\",
+    \"type\": 60,
+    \"key\": \"${REACTOR_WORKER_SECRET}\",
+    \"base_url\": \"${REACTOR_WORKER_URL:-http://reactor-worker:8091}\",
+    \"models\": \"reactor/fast-h3-omni,sv-fast-h3-omni\",
+    \"model_mapping\": \"{\\\"sv-fast-h3-omni\\\":\\\"reactor/fast-h3-omni\\\"}\",
+    \"group\": \"sv-monorepo,bragi-canvas\",
+    \"priority\": 100,
+    \"weight\": 100,
+    \"status\": 1
+  }"
+else
+  echo "[seed] Reactor skipped: REACTOR_WORKER_SECRET is not configured."
+fi
+
 
 # Channel 4: fal (type=59, FAL audio + async video)
 upsert_channel "fal" "fal-media" "{
