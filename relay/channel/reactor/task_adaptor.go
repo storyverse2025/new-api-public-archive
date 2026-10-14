@@ -194,7 +194,11 @@ func (a *TaskAdaptor) ParseTaskResult(body []byte) (*relaycommon.TaskInfo, error
 func (a *TaskAdaptor) GetModelList() []string { return ModelList }
 func (a *TaskAdaptor) GetChannelName() string { return "Reactor" }
 func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
-	return common.Marshal(task.ToOpenAIVideo())
+	video := task.ToOpenAIVideo()
+	if task.Status == model.TaskStatusFailure {
+		video.Error = &dto.OpenAIVideoError{Message: task.FailReason, Code: "generation_failed"}
+	}
+	return common.Marshal(video)
 }
 func validTaskID(id string) bool {
 	if id == "" {

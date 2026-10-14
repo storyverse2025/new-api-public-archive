@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
@@ -188,5 +189,35 @@ func TestCanonicalRequestStillRejectsInvalidPayloadBeforeMapping(t *testing.T) {
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "sv-fast-h3-omni"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
 	if err := (&TaskAdaptor{}).ValidateRequestAndSetAction(c, info); err == nil || !strings.Contains(err.Message, "seconds must be") {
 		t.Fatalf("payload validation error=%+v", err)
+	}
+}
+
+func TestFailedVideoConversionPreservesProviderReason(t *testing.T) {
+	task := &model.Task{TaskID: "public_failure", Status: model.TaskStatusFailure, FailReason: "Forward execution thread failed: GPU worker unavailable"}
+	data, err := (&TaskAdaptor{}).ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var video dto.OpenAIVideo
+	if err = common.Unmarshal(data, &video); err != nil {
+		t.Fatal(err)
+	}
+	if video.Status != dto.VideoStatusFailed || video.Error == nil || video.Error.Code != "generation_failed" || video.Error.Message != task.FailReason {
+		t.Fatalf("failed response lost provider reason: %s", data)
+	}
+}
+
+func TestSuccessfulVideoConversionDoesNotExposeStaleFailure(t *testing.T) {
+	task := &model.Task{TaskID: "public_success", Status: model.TaskStatusSuccess, FailReason: "old reason", PrivateData: model.TaskPrivateData{ResultURL: "https://gateway.example/v1/videos/public_success/content"}}
+	data, err := (&TaskAdaptor{}).ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var video dto.OpenAIVideo
+	if err = common.Unmarshal(data, &video); err != nil {
+		t.Fatal(err)
+	}
+	if video.Status != dto.VideoStatusCompleted || video.Error != nil {
+		t.Fatalf("unexpected error for success: %s", data)
 	}
 }
