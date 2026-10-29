@@ -107,6 +107,7 @@ type TaskPrivateData struct {
 	TokenId        int                 `json:"token_id,omitempty"`        // 令牌 ID，用于令牌额度退款
 	ConsumeLogId   int                 `json:"consume_log_id,omitempty"`  // 提交时预扣费日志 ID，结算时就地更新该行（避免一个任务产生两条日志）
 	BillingContext *TaskBillingContext `json:"billing_context,omitempty"` // 计费参数快照（用于轮询阶段重新计算）
+	SeedanceDraft  bool                `json:"seedance_draft,omitempty"`  // Seedance 2.5 draft 任务，可被 metadata.draft_task_id 引用生成正式视频
 }
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。

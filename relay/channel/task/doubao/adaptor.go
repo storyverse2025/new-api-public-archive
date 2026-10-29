@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -22,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
+	"github.com/tidwall/sjson"
 )
 
 // ============================
@@ -29,16 +31,21 @@ import (
 // ============================
 
 type ContentItem struct {
-	Type     string    `json:"type,omitempty"`
-	Text     string    `json:"text,omitempty"`
-	ImageURL *MediaURL `json:"image_url,omitempty"`
-	VideoURL *MediaURL `json:"video_url,omitempty"`
-	AudioURL *MediaURL `json:"audio_url,omitempty"`
-	Role     string    `json:"role,omitempty"`
+	Type      string        `json:"type,omitempty"`
+	Text      string        `json:"text,omitempty"`
+	ImageURL  *MediaURL     `json:"image_url,omitempty"`
+	VideoURL  *MediaURL     `json:"video_url,omitempty"`
+	AudioURL  *MediaURL     `json:"audio_url,omitempty"`
+	DraftTask *DraftTaskRef `json:"draft_task,omitempty"`
+	Role      string        `json:"role,omitempty"`
 }
 
 type MediaURL struct {
 	URL string `json:"url,omitempty"`
+}
+
+type DraftTaskRef struct {
+	ID string `json:"id"`
 }
 
 type requestPayload struct {
@@ -119,8 +126,139 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
+	if origin := seedanceDraftOrigin(info); origin != nil {
+		req, taskErr := relaycommon.BindTaskRequestWithoutPrompt(c, info, constant.TaskActionGenerate)
+		if taskErr != nil {
+			return taskErr
+		}
+		if err := validateSeedanceDraftFinalRequest(&req); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		input, err := seedanceDraftFinalBillingInput(origin)
+		if err != nil {
+			return service.TaskErrorWrapperLocal(err, "billing_rule_request_error", http.StatusInternalServerError)
+		}
+		info.BillingRequestInput = input
+		return nil
+	}
+
 	// Accept only POST /v1/video/generations as "generate" action.
-	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
+	if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate); taskErr != nil {
+		return taskErr
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	input, err := seedanceDraftBillingInput(c, &req)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "billing_rule_request_error", http.StatusInternalServerError)
+	}
+	if input != nil {
+		info.BillingRequestInput = input
+	}
+	return nil
+}
+
+// seedanceDraftOrigin returns the draft task a final-video request was
+// resolved from, or nil for any other request.
+func seedanceDraftOrigin(info *relaycommon.RelayInfo) *relaycommon.SeedanceDraftOrigin {
+	if info == nil || info.TaskRelayInfo == nil {
+		return nil
+	}
+	return info.SeedanceDraftOrigin
+}
+
+// Seedance 2.5 draft → final: these are reused from the draft task and BytePlus
+// rejects them even when the values match the draft.
+var seedanceDraftReusedMetadataKeys = []string{"content", "duration", "ratio", "seed", "generate_audio", "omni_reference_task_type"}
+
+func validateSeedanceDraftFinalRequest(req *relaycommon.TaskSubmitReq) error {
+	reused := make([]string, 0)
+	if strings.TrimSpace(req.Prompt) != "" {
+		reused = append(reused, "prompt")
+	}
+	if len(req.Images) > 0 {
+		reused = append(reused, "images")
+	}
+	if len(req.Audios) > 0 {
+		reused = append(reused, "audios")
+	}
+	if len(req.Videos) > 0 {
+		reused = append(reused, "videos")
+	}
+	if req.Duration != 0 || strings.TrimSpace(req.Seconds) != "" {
+		reused = append(reused, "duration")
+	}
+	for _, key := range seedanceDraftReusedMetadataKeys {
+		if _, ok := req.Metadata[key]; ok {
+			reused = append(reused, "metadata."+key)
+		}
+	}
+	if len(reused) > 0 {
+		return fmt.Errorf("%s cannot be set with metadata.draft_task_id: they are reused from the draft task", strings.Join(reused, ", "))
+	}
+
+	var params struct {
+		Draft *dto.BoolValue `json:"draft,omitempty"`
+	}
+	if err := taskcommon.UnmarshalMetadata(req.Metadata, &params); err != nil {
+		return errors.Wrap(err, "unmarshal metadata failed")
+	}
+	if params.Draft != nil && bool(*params.Draft) {
+		return fmt.Errorf("metadata.draft cannot be true with metadata.draft_task_id")
+	}
+	return nil
+}
+
+// seedanceDraftFinalBillingInput bills the final video like the draft it came
+// from: same output duration and input video, at 1080p.
+func seedanceDraftFinalBillingInput(origin *relaycommon.SeedanceDraftOrigin) (*billingexpr.RequestInput, error) {
+	body := map[string]any{"resolution": seedanceDraftFinalResolution}
+	if origin.OutputSeconds > 0 {
+		body["duration"] = origin.OutputSeconds
+	}
+	if origin.HasVideoInput {
+		body["has_video_input"] = true
+		body["input_video_duration"] = origin.InputVideoSeconds
+	}
+	data, err := common.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return &billingexpr.RequestInput{Body: data}, nil
+}
+
+// seedanceDraftBillingInput bills a draft request without an explicit
+// resolution at 480p, the only resolution a draft can have. Returns nil when
+// the request body needs no change.
+func seedanceDraftBillingInput(c *gin.Context, req *relaycommon.TaskSubmitReq) (*billingexpr.RequestInput, error) {
+	var params struct {
+		Draft      *dto.BoolValue `json:"draft,omitempty"`
+		Resolution string         `json:"resolution,omitempty"`
+	}
+	if err := taskcommon.UnmarshalMetadata(req.Metadata, &params); err != nil {
+		return nil, errors.Wrap(err, "unmarshal metadata failed")
+	}
+	if params.Draft == nil || !bool(*params.Draft) || strings.TrimSpace(params.Resolution) != "" {
+		return nil, nil
+	}
+	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") {
+		return nil, nil
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	body, err = sjson.SetBytes(body, "metadata.resolution", seedanceDraftResolution)
+	if err != nil {
+		return nil, err
+	}
+	return &billingexpr.RequestInput{Body: body}, nil
 }
 
 // BuildRequestURL constructs the upstream URL.
@@ -186,11 +324,19 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 
-	body, err := a.convertToRequestPayload(&req, info)
+	var body *requestPayload
+	origin := seedanceDraftOrigin(info)
+	if origin != nil {
+		body, err = convertDraftFinalPayload(&req, origin, info.UpstreamModelName)
+	} else {
+		body, err = a.convertToRequestPayload(&req, info)
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "convert request payload failed")
 	}
-	if info.IsModelMapped {
+	// A final video must use the draft task's upstream model, even if the
+	// channel's model mapping changed since.
+	if info.IsModelMapped && origin == nil {
 		body.Model = info.UpstreamModelName
 	} else {
 		info.UpstreamModelName = body.Model
@@ -285,6 +431,11 @@ const (
 	seedance25MaxReferenceAudios = 10
 	seedance25MaxReferenceVideos = 10
 	seedance25MaxReferences      = 50
+
+	// Draft mode (2.5 only): a draft is always 480p and the final video
+	// generated from it is always 1080p.
+	seedanceDraftResolution      = "480p"
+	seedanceDraftFinalResolution = "1080p"
 )
 
 func (a *TaskAdaptor) channelSeedanceEndpoint() string {
@@ -384,6 +535,19 @@ func seedanceContentHasRole(content []ContentItem, role string) bool {
 func validateSeedancePayload(model, mode string, p *requestPayload) error {
 	imageCount, audioCount, videoCount := contentReferenceCounts(p.Content)
 	is25 := isSeedance25Model(model)
+	for _, item := range p.Content {
+		if item.Type == "draft_task" || item.DraftTask != nil {
+			return fmt.Errorf("draft_task content is not accepted; reference a draft with metadata.draft_task_id")
+		}
+	}
+	if p.Draft != nil && bool(*p.Draft) {
+		if !is25 {
+			return fmt.Errorf("draft mode is only supported by seedance 2.5")
+		}
+		if strings.ToLower(strings.TrimSpace(p.Resolution)) != seedanceDraftResolution {
+			return fmt.Errorf("seedance 2.5 draft only supports %s output", seedanceDraftResolution)
+		}
+	}
 	maxImages, maxAudios, maxVideos := seedance20MaxReferenceImages, seedance20MaxReferenceAudios, seedance20MaxReferenceVideos
 	modelName := "seedance"
 	if is25 {
@@ -528,6 +692,12 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
 
+	if r.Draft != nil && bool(*r.Draft) {
+		r.Resolution = taskcommon.DefaultString(r.Resolution, seedanceDraftResolution)
+		if info != nil && info.TaskRelayInfo != nil {
+			info.SeedanceDraft = true
+		}
+	}
 	if isSeedance25Model(modelName) {
 		r.Ratio = taskcommon.DefaultString(r.Ratio, "adaptive")
 		r.Resolution = taskcommon.DefaultString(r.Resolution, "720p")
@@ -563,6 +733,63 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 	}
 
 	return &r, nil
+}
+
+// seedanceDraftFinalParams are the parameters a draft → final request may set.
+// BytePlus does not carry them over from the draft: omitted ones fall back to
+// defaults, so the gateway's 2.5 defaults apply.
+type seedanceDraftFinalParams struct {
+	Resolution            string         `json:"resolution,omitempty"`
+	ReturnLastFrame       *dto.BoolValue `json:"return_last_frame,omitempty"`
+	OutputFormat          string         `json:"output_format,omitempty"`
+	Watermark             *dto.BoolValue `json:"watermark,omitempty"`
+	ServiceTier           string         `json:"service_tier,omitempty"`
+	ExecutionExpiresAfter *dto.IntValue  `json:"execution_expires_after,omitempty"`
+	CallbackURL           string         `json:"callback_url,omitempty"`
+}
+
+// convertDraftFinalPayload builds the BytePlus Step 2 request: the draft task
+// reference plus the re-specifiable parameters, nothing reused from the draft.
+func convertDraftFinalPayload(req *relaycommon.TaskSubmitReq, origin *relaycommon.SeedanceDraftOrigin, fallbackModel string) (*requestPayload, error) {
+	var params seedanceDraftFinalParams
+	if err := taskcommon.UnmarshalMetadata(req.Metadata, &params); err != nil {
+		return nil, errors.Wrap(err, "unmarshal metadata failed")
+	}
+
+	resolution := strings.ToLower(strings.TrimSpace(params.Resolution))
+	if resolution == "" {
+		resolution = seedanceDraftFinalResolution
+	}
+	if resolution != seedanceDraftFinalResolution {
+		return nil, fmt.Errorf("seedance 2.5 final video from a draft only supports %s output", seedanceDraftFinalResolution)
+	}
+	outputFormat := strings.ToLower(strings.TrimSpace(params.OutputFormat))
+	if outputFormat == "" {
+		outputFormat = "mp4"
+	}
+	if !lo.Contains([]string{"mp4", "mov"}, outputFormat) {
+		return nil, fmt.Errorf("seedance 2.5 does not support %s output format", params.OutputFormat)
+	}
+	watermark := params.Watermark
+	if watermark == nil {
+		watermark = lo.ToPtr(dto.BoolValue(false))
+	}
+
+	model := origin.UpstreamModelName
+	if model == "" {
+		model = fallbackModel
+	}
+	return &requestPayload{
+		Model:                 model,
+		Content:               []ContentItem{{Type: "draft_task", DraftTask: &DraftTaskRef{ID: origin.UpstreamTaskID}}},
+		Resolution:            resolution,
+		ReturnLastFrame:       params.ReturnLastFrame,
+		OutputFormat:          outputFormat,
+		Watermark:             watermark,
+		ServiceTier:           params.ServiceTier,
+		ExecutionExpiresAfter: params.ExecutionExpiresAfter,
+		CallbackURL:           params.CallbackURL,
+	}, nil
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
@@ -618,6 +845,9 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	openAIVideo.CreatedAt = originTask.CreatedAt
 	openAIVideo.CompletedAt = originTask.FinishTime
 	openAIVideo.Model = originTask.Properties.OriginModelName
+	if originTask.PrivateData.SeedanceDraft {
+		openAIVideo.SetMetadata("draft", true)
+	}
 
 	if dResp.Status == "failed" {
 		openAIVideo.Error = &dto.OpenAIVideoError{

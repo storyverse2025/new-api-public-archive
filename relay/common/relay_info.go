@@ -683,6 +683,23 @@ type TaskRelayInfo struct {
 	// a specific channel (e.g., remix on origin task's channel). Stored as any
 	// to avoid an import cycle with model; callers type-assert to *model.Channel.
 	LockedChannel any
+
+	// SeedanceDraft 标记本次提交是 Seedance 2.5 draft（样片）任务，落库后
+	// 才能被 metadata.draft_task_id 引用来生成正式视频。
+	SeedanceDraft bool
+	// SeedanceDraftOrigin 非 nil 表示本次提交是用 draft 生成正式视频，
+	// 由 ResolveOriginTask 根据 metadata.draft_task_id 解析得到。
+	SeedanceDraftOrigin *SeedanceDraftOrigin
+}
+
+// SeedanceDraftOrigin 是 draft → 正式视频提交所需的 draft 任务信息。
+type SeedanceDraftOrigin struct {
+	UpstreamTaskID    string
+	UpstreamModelName string
+	// 以下用于计费：正式视频沿用 draft 的时长和输入视频，单价取决于 draft 是否含视频输入。
+	OutputSeconds     float64
+	HasVideoInput     bool
+	InputVideoSeconds float64
 }
 
 type TaskSubmitReq struct {

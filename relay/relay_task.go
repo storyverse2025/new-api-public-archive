@@ -23,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 type TaskSubmitResult struct {
@@ -54,6 +55,18 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		info.OriginTaskID = videoID
 	}
 
+	// Seedance draft → 正式视频：metadata.draft_task_id 引用 draft 任务的公开 ID
+	draftTaskID, taskErr := requestDraftTaskID(c)
+	if taskErr != nil {
+		return taskErr
+	}
+	if draftTaskID != "" {
+		if info.Action == constant.TaskActionRemix {
+			return service.TaskErrorWrapperLocal(errors.New("metadata.draft_task_id is not supported for remix"), "invalid_request", http.StatusBadRequest)
+		}
+		info.OriginTaskID = draftTaskID
+	}
+
 	if info.OriginTaskID == "" {
 		return nil
 	}
@@ -79,6 +92,12 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 			if m, ok := taskData["model"].(string); ok && m != "" {
 				info.OriginModelName = m
 			}
+		}
+	}
+
+	if draftTaskID != "" {
+		if taskErr := resolveSeedanceDraftOrigin(info, originTask); taskErr != nil {
+			return taskErr
 		}
 	}
 
@@ -138,6 +157,60 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		}
 	}
 
+	return nil
+}
+
+// requestDraftTaskID 读取 JSON 请求体中的 metadata.draft_task_id。
+func requestDraftTaskID(c *gin.Context) (string, *dto.TaskError) {
+	if !strings.HasPrefix(c.GetHeader("Content-Type"), "application/json") {
+		return "", nil
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return "", service.TaskErrorWrapperLocal(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return "", service.TaskErrorWrapperLocal(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+	value := gjson.GetBytes(body, "metadata.draft_task_id")
+	if !value.Exists() || value.Type == gjson.Null {
+		return "", nil
+	}
+	if value.Type != gjson.String || strings.TrimSpace(value.Str) == "" {
+		return "", service.TaskErrorWrapperLocal(errors.New("metadata.draft_task_id must be a non-empty task id"), "invalid_request", http.StatusBadRequest)
+	}
+	return strings.TrimSpace(value.Str), nil
+}
+
+// resolveSeedanceDraftOrigin 校验 draft 任务可用于生成正式视频，并记录上游 draft ID 和计费所需的 draft 参数。
+// 有效期不在本地判断，过期由上游拒绝。
+func resolveSeedanceDraftOrigin(info *relaycommon.RelayInfo, originTask *model.Task) *dto.TaskError {
+	if !originTask.PrivateData.SeedanceDraft {
+		return service.TaskErrorWrapperLocal(fmt.Errorf("task %s is not a Seedance draft task", originTask.TaskID), "draft_task_invalid", http.StatusBadRequest)
+	}
+	if originTask.Status != model.TaskStatusSuccess {
+		return service.TaskErrorWrapperLocal(fmt.Errorf("draft task %s has not succeeded (status: %s)", originTask.TaskID, originTask.Status), "draft_task_not_ready", http.StatusBadRequest)
+	}
+	if info.OriginModelName != originTask.Properties.OriginModelName {
+		return service.TaskErrorWrapperLocal(fmt.Errorf("model %s does not match draft task model %s", info.OriginModelName, originTask.Properties.OriginModelName), "draft_task_model_mismatch", http.StatusBadRequest)
+	}
+
+	origin := &relaycommon.SeedanceDraftOrigin{
+		UpstreamTaskID:    originTask.GetUpstreamTaskID(),
+		UpstreamModelName: originTask.Properties.UpstreamModelName,
+	}
+	if bc := originTask.PrivateData.BillingContext; bc != nil && bc.ProviderBillingSnapshot != nil {
+		params := bc.ProviderBillingSnapshot.Params
+		origin.OutputSeconds, _ = params["output_seconds"].(float64)
+		origin.HasVideoInput, _ = params["has_video_input"].(bool)
+		origin.InputVideoSeconds, _ = params["input_video_seconds"].(float64)
+	}
+	// 上游返回的实际时长优先（draft 请求的 duration 可能是 -1 / Auto）
+	if seconds := gjson.GetBytes(originTask.Data, "duration").Float(); seconds > 0 {
+		origin.OutputSeconds = seconds
+	}
+	info.SeedanceDraftOrigin = origin
 	return nil
 }
 

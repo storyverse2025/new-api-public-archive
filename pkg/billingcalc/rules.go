@@ -377,6 +377,13 @@ func (r BytePlusSeedance2Rule) Settle(ctx Context) (Result, error) {
 		if minTokens := seedanceMinTokens(ctx.RuleParams, params.Resolution, params.HasVideoInput, params.Fast); minTokens > 0 && tokens < minTokens {
 			tokens = minTokens
 		}
+		// BytePlus bills usage.completion_tokens, which already includes the
+		// input video duration and the minimum token consumption.
+		if paramBool(ctx.RuleParams, "settle_by_completion_tokens", false) {
+			if completionTokens := jsonFloat(ctx.ResponseBody, 0, "usage.completion_tokens"); completionTokens > 0 {
+				tokens = completionTokens
+			}
+		}
 		cost := tokens / 1_000_000 * rate
 		return Result{
 			RuleName: r.Name(),
@@ -416,7 +423,7 @@ func seedanceParams(ctx Context) seedanceBillingParams {
 		outputSeconds = paramFloat(ctx.RuleParams, "default_seconds", 5)
 	}
 	inputVideoSeconds := jsonFloat(ctx.RequestBody, 0, "input_video_duration", "metadata.input_video_duration", "metadata.inputVideoDuration")
-	hasVideo := inputVideoSeconds > 0 || hasVideoInput(ctx.RequestBody)
+	hasVideo := inputVideoSeconds > 0 || jsonBool(ctx.RequestBody, false, "has_video_input") || hasVideoInput(ctx.RequestBody)
 	if hasVideo && inputVideoSeconds <= 0 {
 		inputVideoSeconds = paramFloat(ctx.RuleParams, "default_input_video_seconds", 0)
 	}
@@ -476,6 +483,9 @@ func seedanceSettleParams(ctx Context) seedanceBillingParams {
 
 func hasVideoInput(body []byte) bool {
 	if hasAny(body, "video", "input_video", "video_url", "metadata.video", "metadata.input_video", "metadata.video_url") {
+		return true
+	}
+	if jsonArrayLen(body, "videos") > 0 {
 		return true
 	}
 	content := strings.ToLower(gjsonString(body, "metadata.content"))
