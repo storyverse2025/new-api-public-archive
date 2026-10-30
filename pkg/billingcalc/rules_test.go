@@ -335,3 +335,136 @@ func TestSettleSnapshotUsesStoredParams(t *testing.T) {
 		t.Fatalf("settled quota = %d, want %d", settled.Quota, estimated.Quota)
 	}
 }
+
+// seedance25RuleParams mirrors deploy/seed_billing_rules.sh for sv-seedance-2.5.
+func seedance25RuleParams() map[string]any {
+	return map[string]any{
+		"default_seconds":    5,
+		"default_resolution": "720p",
+		"fps":                24,
+		"width_480p":         854,
+		"height_480p":        480,
+		"standard_720p_no_video_rate_per_m_tokens":     10.7,
+		"standard_1080p_no_video_rate_per_m_tokens":    11.7,
+		"standard_720p_video_input_rate_per_m_tokens":  6.4,
+		"standard_1080p_video_input_rate_per_m_tokens": 7.0,
+		"settle_by_completion_tokens":                  true,
+	}
+}
+
+// BytePlus pricing examples for Dreamina Seedance 2.5 (16:9, 5s, no video input).
+func TestBytePlusSeedance25MatchesOfficialExamples(t *testing.T) {
+	for _, tc := range []struct {
+		resolution   string
+		perSecondUSD float64
+	}{
+		{"480p", 0.103},
+		{"720p", 0.231},
+		{"1080p", 0.569},
+	} {
+		t.Run(tc.resolution, func(t *testing.T) {
+			result, err := Estimate("byteplus_seedance2", Context{
+				GroupRatio:   1,
+				QuotaPerUnit: 500000,
+				RequestBody:  []byte(`{"metadata":{"duration":5,"resolution":"` + tc.resolution + `"}}`),
+				RuleParams:   seedance25RuleParams(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result.CostUSD / 5; math.Abs(got-tc.perSecondUSD) > 0.0005 {
+				t.Fatalf("cost per second = %v, want %v", got, tc.perSecondUSD)
+			}
+		})
+	}
+}
+
+func TestBytePlusSeedance2DetectsVideoInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"top-level videos", `{"videos":["https://example.com/v.mp4"],"metadata":{"resolution":"720p"}}`, true},
+		{"empty videos", `{"videos":[],"metadata":{"resolution":"720p"}}`, false},
+		{"explicit flag", `{"has_video_input":true,"resolution":"1080p"}`, true},
+		{"images only", `{"images":["https://example.com/a.png"],"metadata":{"resolution":"720p"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := Estimate("byteplus_seedance2", Context{
+				GroupRatio:   1,
+				QuotaPerUnit: 500000,
+				RequestBody:  []byte(tc.body),
+				RuleParams:   seedance25RuleParams(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result.Params["has_video_input"]; got != tc.want {
+				t.Fatalf("has_video_input = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A final video from a draft is billed at the 1080p video-input rate when the
+// draft had video input, over the draft's input and output seconds.
+func TestBytePlusSeedance25DraftFinalUsesDraftVideoInput(t *testing.T) {
+	result, err := Estimate("byteplus_seedance2", Context{
+		GroupRatio:   1,
+		QuotaPerUnit: 500000,
+		RequestBody:  []byte(`{"resolution":"1080p","duration":6,"has_video_input":true,"input_video_duration":4}`),
+		RuleParams:   seedance25RuleParams(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCost := (10.0 * 1920 * 1080 * 24 / 1024) / 1_000_000 * 7.0
+	if math.Abs(result.CostUSD-wantCost) > 1e-12 {
+		t.Fatalf("cost = %v, want %v", result.CostUSD, wantCost)
+	}
+}
+
+func TestBytePlusSeedance2SettleByCompletionTokens(t *testing.T) {
+	estimated, err := Estimate("byteplus_seedance2", Context{
+		GroupRatio:   1,
+		QuotaPerUnit: 500000,
+		RequestBody:  []byte(`{"videos":["https://example.com/v.mp4"],"metadata":{"resolution":"720p","duration":5}}`),
+		RuleParams:   seedance25RuleParams(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled, err := SettleSnapshot(estimated.Snapshot, Context{
+		ResponseBody: []byte(`{"status":"succeeded","duration":5,"resolution":"720p","usage":{"completion_tokens":250000}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCost := 250000.0 / 1_000_000 * 6.4
+	if math.Abs(settled.CostUSD-wantCost) > 1e-12 {
+		t.Fatalf("cost = %v, want %v", settled.CostUSD, wantCost)
+	}
+
+	// Without the flag the formula still applies (Seedance 2.0 behaviour).
+	params := seedance25RuleParams()
+	delete(params, "settle_by_completion_tokens")
+	estimated, err = Estimate("byteplus_seedance2", Context{
+		GroupRatio:   1,
+		QuotaPerUnit: 500000,
+		RequestBody:  []byte(`{"metadata":{"resolution":"720p","duration":5}}`),
+		RuleParams:   params,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled, err = SettleSnapshot(estimated.Snapshot, Context{
+		ResponseBody: []byte(`{"status":"succeeded","duration":5,"resolution":"720p","usage":{"completion_tokens":250000}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(settled.CostUSD-estimated.CostUSD) > 1e-12 {
+		t.Fatalf("cost = %v, want formula cost %v", settled.CostUSD, estimated.CostUSD)
+	}
+}

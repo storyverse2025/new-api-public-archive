@@ -196,29 +196,46 @@ func isKnownTaskField(field string) bool {
 }
 
 func ValidateBasicTaskRequest(c *gin.Context, info *RelayInfo, action string) *dto.TaskError {
+	req, taskErr := parseTaskRequest(c, info, action)
+	if taskErr != nil {
+		return taskErr
+	}
+	if taskErr := validatePrompt(req.Prompt); taskErr != nil {
+		return taskErr
+	}
+	storeTaskRequest(c, info, action, req)
+	return nil
+}
+
+// BindTaskRequestWithoutPrompt 与 ValidateBasicTaskRequest 相同，但不要求 prompt，
+// 用于复用已有任务内容的提交（如 Seedance draft → 正式视频）。
+func BindTaskRequestWithoutPrompt(c *gin.Context, info *RelayInfo, action string) (TaskSubmitReq, *dto.TaskError) {
+	req, taskErr := parseTaskRequest(c, info, action)
+	if taskErr != nil {
+		return req, taskErr
+	}
+	storeTaskRequest(c, info, action, req)
+	return req, nil
+}
+
+func parseTaskRequest(c *gin.Context, info *RelayInfo, action string) (TaskSubmitReq, *dto.TaskError) {
 	var err error
 	contentType := c.GetHeader("Content-Type")
 	var req TaskSubmitReq
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		req, err = validateMultipartTaskRequest(c, info, action)
 		if err != nil {
-			return createTaskError(err, "invalid_multipart_form", http.StatusBadRequest, true)
+			return req, createTaskError(err, "invalid_multipart_form", http.StatusBadRequest, true)
 		}
 	}
 	// 为了metadata字段的兼容性，统一UnmarshalBodyReusable
 	if err := common.UnmarshalBodyReusable(c, &req); err != nil {
-		return createTaskError(err, "invalid_request", http.StatusBadRequest, true)
-	}
-
-	if taskErr := validatePrompt(req.Prompt); taskErr != nil {
-		return taskErr
+		return req, createTaskError(err, "invalid_request", http.StatusBadRequest, true)
 	}
 
 	if len(req.Images) == 0 && strings.TrimSpace(req.Image) != "" {
 		// 兼容单图上传
 		req.Images = []string{req.Image}
 	}
-
-	storeTaskRequest(c, info, action, req)
-	return nil
+	return req, nil
 }
