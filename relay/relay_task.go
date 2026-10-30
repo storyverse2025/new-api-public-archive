@@ -111,7 +111,9 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 	}
 	info.LockedChannel = ch
 
-	if originTask.ChannelId != info.ChannelId {
+	// ChannelMeta 此时尚未初始化，RelayTaskSubmit 会通过 InitChannelMeta 从上下文重建，
+	// 因此这里只比较和改写上下文中的渠道信息。
+	if originTask.ChannelId != common.GetContextKeyInt(c, constant.ContextKeyChannelId) {
 		key, _, newAPIError := ch.GetNextEnabledKey()
 		if newAPIError != nil {
 			return service.TaskErrorWrapper(newAPIError, "channel_no_available_key", newAPIError.StatusCode)
@@ -121,12 +123,6 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, ch.GetBaseURL())
 		common.SetContextKey(c, constant.ContextKeyChannelId, originTask.ChannelId)
 		common.SetContextKey(c, constant.ContextKeyChannelName, ch.Name)
-
-		info.ChannelBaseUrl = ch.GetBaseURL()
-		info.ChannelId = originTask.ChannelId
-		info.ChannelName = ch.Name
-		info.ChannelType = ch.Type
-		info.ApiKey = key
 	}
 
 	// 提取 remix 参数（时长、分辨率 → OtherRatios）
