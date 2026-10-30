@@ -47,4 +47,5 @@ deploy/logs/
 # SV deploy production secrets and caddy state (never commit)
 deploy/.env.prod
 deploy/caddy_data/
+deploy/.smoke.env
 deploy/caddy_config/
