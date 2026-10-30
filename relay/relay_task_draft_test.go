@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingcalc"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -92,21 +93,28 @@ func setupDraftDB(t *testing.T) {
 	}
 }
 
-func resolveDraft(t *testing.T, userID int, body string) (*relaycommon.RelayInfo, string) {
+func resolveDraftOnChannel(t *testing.T, userID, channelID int, body string) (*gin.Context, *relaycommon.RelayInfo, string) {
 	t.Helper()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyChannelId, channelID)
+	// Like GenRelayInfo for tasks: ChannelMeta is only set later by RelayTaskSubmit.
 	info := &relaycommon.RelayInfo{
 		UserId:          userID,
 		OriginModelName: draftModel,
-		ChannelMeta:     &relaycommon.ChannelMeta{ChannelId: draftChannelID},
 		TaskRelayInfo:   &relaycommon.TaskRelayInfo{},
 	}
 	if taskErr := ResolveOriginTask(c, info); taskErr != nil {
-		return info, taskErr.Code
+		return c, info, taskErr.Code
 	}
-	return info, ""
+	return c, info, ""
+}
+
+func resolveDraft(t *testing.T, userID int, body string) (*relaycommon.RelayInfo, string) {
+	t.Helper()
+	_, info, code := resolveDraftOnChannel(t, userID, draftChannelID, body)
+	return info, code
 }
 
 func TestResolveSeedanceDraftOrigin(t *testing.T) {
@@ -131,6 +139,25 @@ func TestResolveSeedanceDraftOrigin(t *testing.T) {
 	ch, ok := info.LockedChannel.(*model.Channel)
 	if !ok || ch.Id != draftChannelID {
 		t.Fatalf("locked channel = %v, want channel %d", info.LockedChannel, draftChannelID)
+	}
+}
+
+func TestResolveSeedanceDraftOriginSwitchesToDraftChannel(t *testing.T) {
+	setupDraftDB(t)
+	seedDraftTask(t, "task_draft", nil)
+
+	c, info, code := resolveDraftOnChannel(t, draftOwner, draftChannelID+1, `{"model":"sv-seedance-2.5","metadata":{"draft_task_id":"task_draft"}}`)
+	if code != "" {
+		t.Fatalf("code = %q, want success", code)
+	}
+	if got := common.GetContextKeyInt(c, constant.ContextKeyChannelId); got != draftChannelID {
+		t.Fatalf("context channel = %d, want the draft's channel %d", got, draftChannelID)
+	}
+	if got := common.GetContextKeyString(c, constant.ContextKeyChannelKey); got != "sk-test" {
+		t.Fatalf("context key = %q, want the draft channel's key", got)
+	}
+	if info.SeedanceDraftOrigin == nil {
+		t.Fatal("draft origin was not resolved")
 	}
 }
 
